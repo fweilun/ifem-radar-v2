@@ -1,16 +1,7 @@
-use axum::{
-    routing::{get, post},
-    Router,
-};
 use dotenvy::dotenv;
+use ifem_radar_v2::{create_router, database, storage};
 use std::env;
 use std::net::SocketAddr;
-use tower_http::trace::TraceLayer;
-
-mod database;
-mod handlers;
-mod models;
-mod storage;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -36,16 +27,7 @@ async fn main() -> anyhow::Result<()> {
         bucket_name,
     };
 
-    // Router
-    let app = Router::new()
-        .route("/health", get(handlers::health_check))
-        .route("/api/surveys", post(handlers::create_survey_handler))
-        .route(
-            "/api/surveys/:id/photos",
-            post(handlers::upload_photo_handler),
-        )
-        .layer(TraceLayer::new_for_http())
-        .with_state(app_state);
+    let app = create_router(app_state);
 
     // Run
     let port = env::var("PORT").unwrap_or_else(|_| "8080".to_string());
