@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        INSERT INTO survey_records (\n            id, start_point, end_point, orientation, distance, top_distance,\n            category, details, awaiting_photo_count, remarks\n        )\n        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n        RETURNING id\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Varchar",
+        "Float8",
+        "Varchar",
+        "Varchar",
+        "Jsonb",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0155a94f393a51aac58c0bfb2a9fc38015963083d3266f4873fb2b657e1a5634"
+}

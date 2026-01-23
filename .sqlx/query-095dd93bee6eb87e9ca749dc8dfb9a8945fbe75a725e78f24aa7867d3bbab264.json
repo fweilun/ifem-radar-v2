@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        UPDATE survey_records\n        SET photo_urls = array_append(photo_urls, $2),\n            awaiting_photo_count = GREATEST(awaiting_photo_count - 1, 0)\n        WHERE id = $1\n        ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "095dd93bee6eb87e9ca749dc8dfb9a8945fbe75a725e78f24aa7867d3bbab264"
+}
