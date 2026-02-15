@@ -1,4 +1,4 @@
-FROM rust:latest as builder
+FROM rust:1-bookworm as builder
 
 WORKDIR /app
 
@@ -18,12 +18,14 @@ ENV SQLX_OFFLINE=true
 RUN cargo build --release
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 WORKDIR /app
 
 # Install dependencies
-RUN apt-get update && apt-get install -y libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && \
+    apt-get install -y ca-certificates libssl3 && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy binary
 COPY --from=builder /app/target/release/ifem-radar-v2 .
