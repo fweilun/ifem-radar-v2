@@ -1,4 +1,4 @@
-FROM rust:1-bookworm as builder
+FROM docker.io/library/rust:1-bookworm as builder
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ ENV SQLX_OFFLINE=true
 RUN cargo build --release
 
 # Runtime stage
-FROM ubuntu:24.04
+FROM docker.io/library/ubuntu:24.04
 
 WORKDIR /app
 
