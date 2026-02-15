@@ -1,12 +1,34 @@
-use crate::database::{self, AppState};
+use crate::database::{self, AppState, SurveyQueryFilters};
 use crate::models::{ApiResponse, CreateSurveyRequest};
 use crate::storage;
 use axum::{
-    extract::{Multipart, Path, State},
+    extract::{Multipart, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     Json,
 };
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+pub struct SurveyQueryParams {
+    pub category: Option<String>,
+    pub start_point: Option<String>,
+    pub end_point: Option<String>,
+    pub created_from: Option<String>,
+    pub created_to: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+fn parse_rfc3339(opt: Option<String>) -> Result<Option<DateTime<Utc>>, String> {
+    match opt {
+        Some(value) => DateTime::parse_from_rfc3339(&value)
+            .map(|dt| Some(dt.with_timezone(&Utc)))
+            .map_err(|_| format!("Invalid datetime format: {}", value)),
+        None => Ok(None),
+    }
+}
 
 pub async fn create_survey_handler(
     State(state): State<AppState>,
@@ -124,4 +146,58 @@ pub async fn upload_photo_handler(
 
 pub async fn health_check() -> impl IntoResponse {
     (StatusCode::OK, "OK")
+}
+
+pub async fn get_survey_handler(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    match database::get_survey(&state.db, &id).await {
+        Ok(Some(record)) => (StatusCode::OK, Json(record)).into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "Not Found").into_response(),
+        Err(e) => {
+            tracing::error!("Failed to get survey: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch record",
+            )
+                .into_response()
+        }
+    }
+}
+
+pub async fn list_surveys_handler(
+    State(state): State<AppState>,
+    Query(params): Query<SurveyQueryParams>,
+) -> impl IntoResponse {
+    let created_from = match parse_rfc3339(params.created_from) {
+        Ok(value) => value,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
+    let created_to = match parse_rfc3339(params.created_to) {
+        Ok(value) => value,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
+    };
+
+    let filters = SurveyQueryFilters {
+        category: params.category,
+        start_point: params.start_point,
+        end_point: params.end_point,
+        created_from,
+        created_to,
+        limit: params.limit,
+        offset: params.offset,
+    };
+
+    match database::list_surveys(&state.db, filters).await {
+        Ok(records) => (StatusCode::OK, Json(records)).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to list surveys: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to fetch records",
+            )
+                .into_response()
+        }
+    }
 }

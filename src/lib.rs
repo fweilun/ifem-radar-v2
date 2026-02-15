@@ -13,7 +13,11 @@ use tower_http::trace::TraceLayer;
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(handlers::health_check))
-        .route("/api/surveys", post(handlers::create_survey_handler))
+        .route(
+            "/api/surveys",
+            get(handlers::list_surveys_handler).post(handlers::create_survey_handler),
+        )
+        .route("/api/surveys/:id", get(handlers::get_survey_handler))
         .route(
             "/api/surveys/:id/photos",
             post(handlers::upload_photo_handler),

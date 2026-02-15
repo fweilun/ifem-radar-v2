@@ -1,6 +1,7 @@
-use crate::models::{CreateSurveyRequest, SurveyRecord};
+use crate::models::{CreateSurveyRequest, SurveyCategory, SurveyDetails, SurveyRecord};
 use anyhow::Result;
-use sqlx::{postgres::PgPoolOptions, types::Json, Pool, Postgres};
+use chrono::{DateTime, Utc};
+use sqlx::{postgres::PgPoolOptions, types::Json, Pool, Postgres, QueryBuilder};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -73,6 +74,135 @@ pub async fn add_photo_url(pool: &Pool<Postgres>, id: &str, url: &str) -> Result
     Ok(())
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct SurveyRecordRow {
+    pub id: String,
+    pub start_point: String,
+    pub end_point: String,
+    pub orientation: String,
+    pub distance: f64,
+    pub top_distance: String,
+    pub category: String,
+    pub details: Json<SurveyDetails>,
+    pub photo_urls: Vec<String>,
+    pub awaiting_photo_count: i32,
+    pub remarks: Option<String>,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+fn parse_category(value: &str) -> SurveyCategory {
+    serde_json::from_str::<SurveyCategory>(&format!("\"{}\"", value))
+        .unwrap_or(SurveyCategory::Unknown)
+}
+
+impl SurveyRecordRow {
+    fn into_record(self) -> SurveyRecord {
+        SurveyRecord {
+            id: self.id,
+            start_point: self.start_point,
+            end_point: self.end_point,
+            orientation: self.orientation,
+            distance: self.distance,
+            top_distance: self.top_distance,
+            category: parse_category(&self.category),
+            details: self.details,
+            photo_urls: self.photo_urls,
+            awaiting_photo_count: self.awaiting_photo_count,
+            remarks: self.remarks,
+            created_at: self.created_at,
+        }
+    }
+}
+
+#[derive(Default, Debug, Clone)]
+pub struct SurveyQueryFilters {
+    pub category: Option<String>,
+    pub start_point: Option<String>,
+    pub end_point: Option<String>,
+    pub created_from: Option<DateTime<Utc>>,
+    pub created_to: Option<DateTime<Utc>>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+pub async fn list_surveys(
+    pool: &Pool<Postgres>,
+    filters: SurveyQueryFilters,
+) -> Result<Vec<SurveyRecord>> {
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new("SELECT * FROM survey_records");
+    let mut has_where = false;
+
+    if let Some(category) = filters.category {
+        if !has_where {
+            qb.push(" WHERE ");
+            has_where = true;
+        } else {
+            qb.push(" AND ");
+        }
+        qb.push("category = ").push_bind(category);
+    }
+
+    if let Some(start_point) = filters.start_point {
+        if !has_where {
+            qb.push(" WHERE ");
+            has_where = true;
+        } else {
+            qb.push(" AND ");
+        }
+        qb.push("start_point = ").push_bind(start_point);
+    }
+
+    if let Some(end_point) = filters.end_point {
+        if !has_where {
+            qb.push(" WHERE ");
+            has_where = true;
+        } else {
+            qb.push(" AND ");
+        }
+        qb.push("end_point = ").push_bind(end_point);
+    }
+
+    if let Some(created_from) = filters.created_from {
+        if !has_where {
+            qb.push(" WHERE ");
+            has_where = true;
+        } else {
+            qb.push(" AND ");
+        }
+        qb.push("created_at >= ").push_bind(created_from);
+    }
+
+    if let Some(created_to) = filters.created_to {
+        if !has_where {
+            qb.push(" WHERE ");
+            has_where = true;
+        } else {
+            qb.push(" AND ");
+        }
+        qb.push("created_at <= ").push_bind(created_to);
+    }
+
+    qb.push(" ORDER BY created_at DESC");
+
+    let mut limit = filters.limit.unwrap_or(50);
+    if limit <= 0 {
+        limit = 50;
+    }
+    if limit > 200 {
+        limit = 200;
+    }
+    qb.push(" LIMIT ").push_bind(limit);
+
+    if let Some(offset) = filters.offset {
+        if offset > 0 {
+            qb.push(" OFFSET ").push_bind(offset);
+        }
+    }
+
+    let rows = qb.build_query_as::<SurveyRecordRow>().fetch_all(pool).await?;
+    Ok(rows.into_iter().map(SurveyRecordRow::into_record).collect())
+}
+
 #[allow(dead_code)]
 pub async fn get_survey(pool: &Pool<Postgres>, id: &str) -> Result<Option<SurveyRecord>> {
     // We need to query. Since SurveyCategory is an enum,
@@ -92,10 +222,11 @@ pub async fn get_survey(pool: &Pool<Postgres>, id: &str) -> Result<Option<Survey
     // OR if transparent is used.
     // But let's proceed.
 
-    let result = sqlx::query_as::<_, SurveyRecord>("SELECT * FROM survey_records WHERE id = $1")
+    let result =
+        sqlx::query_as::<_, SurveyRecordRow>("SELECT * FROM survey_records WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
         .await?;
 
-    Ok(result)
+    Ok(result.map(SurveyRecordRow::into_record))
 }
