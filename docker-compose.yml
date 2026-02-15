@@ -1,10 +1,10 @@
 services:
-  app:
+  backend:
     build: .
     ports:
       - "8080:8080"
     environment:
-      - DATABASE_URL=postgres://postgres:postgres@db:5432/ifem_radar
+      - DATABASE_URL=postgres://ifemfweilun:P@ssw0rdIfem@db:5432/ifem_radar
       - AWS_ENDPOINT_URL=http://minio:9000
       - AWS_BUCKET_NAME=ifem-radar
       - AWS_ACCESS_KEY_ID=minioadmin
@@ -18,8 +18,8 @@ services:
   db:
     image: postgres:latest
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=ifemfweilun
+      - POSTGRES_PASSWORD=P@ssw0rdIfem
       - POSTGRES_DB=ifem_radar
     ports:
       - "5432:5432"
@@ -44,12 +44,7 @@ services:
     depends_on:
       - minio
     entrypoint: >
-      /bin/sh -c "
-      until (mc alias set minio http://minio:9000 minioadmin minioadmin); do echo '...waiting...' && sleep 1; done;
-      mc mb minio/ifem-radar || echo 'bucket already exists';
-      mc anonymous set public minio/ifem-radar;
-      exit 0;
-      "
+      /bin/sh -c " until (mc alias set minio http://minio:9000 minioadmin minioadmin); do echo '...waiting...' && sleep 1; done; mc mb minio/ifem-radar || echo 'bucket already exists'; mc anonymous set public minio/ifem-radar; exit 0; "
 
 volumes:
   postgres_data:
