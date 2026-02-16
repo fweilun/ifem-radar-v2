@@ -1,7 +1,7 @@
 use axum::{
     async_trait,
     extract::{FromRequestParts, State},
-    http::{request::Parts, StatusCode},
+    http::{header::AUTHORIZATION, request::Parts, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json, RequestPartsExt,
 };
@@ -138,4 +138,20 @@ pub async fn login(
         encode(&Header::default(), &claims, &KEYS.encoding).map_err(|_| AuthError::TokenCreation)?;
 
     Ok(Json(AuthBody::new(token)))
+}
+
+pub fn claims_from_headers(headers: &HeaderMap) -> Result<Claims, AuthError> {
+    let auth_header = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .ok_or(AuthError::InvalidToken)?;
+
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or(AuthError::InvalidToken)?;
+
+    let token_data = decode::<Claims>(token, &KEYS.decoding, &Validation::default())
+        .map_err(|_| AuthError::InvalidToken)?;
+
+    Ok(token_data.claims)
 }

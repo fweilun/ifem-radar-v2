@@ -1,11 +1,12 @@
-use crate::auth::Claims;
+use crate::auth;
 use crate::database::{self, AppState, SurveyQueryFilters};
 use crate::models::{ApiResponse, CreateSurveyRequest};
 use crate::storage;
 use axum::{
     extract::{Multipart, Path, Query, State},
+    http::HeaderMap,
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use chrono::{DateTime, Utc};
@@ -32,10 +33,14 @@ fn parse_rfc3339(opt: Option<String>) -> Result<Option<DateTime<Utc>>, String> {
 }
 
 pub async fn create_survey_handler(
-    _claims: Claims,
+    headers: HeaderMap,
     State(state): State<AppState>,
     Json(payload): Json<CreateSurveyRequest>,
-) -> impl IntoResponse {
+) -> Response {
+    if let Err(err) = auth::claims_from_headers(&headers) {
+        return err.into_response();
+    }
+
     match database::create_survey_record(&state.db, payload).await {
         Ok(id) => (
             StatusCode::CREATED,
@@ -44,7 +49,8 @@ pub async fn create_survey_handler(
                 message: "Survey record created".to_string(),
                 internal_id: Some(id),
             }),
-        ),
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!("Failed to create survey: {:?}", e);
             (
@@ -55,16 +61,21 @@ pub async fn create_survey_handler(
                     internal_id: None,
                 }),
             )
+                .into_response()
         }
     }
 }
 
 pub async fn upload_photo_handler(
-    _claims: Claims,
+    headers: HeaderMap,
     State(state): State<AppState>,
     Path(id): Path<String>,
     mut multipart: Multipart,
-) -> impl IntoResponse {
+) -> Response {
+    if let Err(err) = auth::claims_from_headers(&headers) {
+        return err.into_response();
+    }
+
     // Basic verification if record exists could be done here
 
     let mut uploaded_urls = Vec::new();
@@ -106,7 +117,8 @@ pub async fn upload_photo_handler(
                                     message: "Failed to update database".to_string(),
                                     internal_id: None,
                                 }),
-                            );
+                            )
+                                .into_response();
                         }
                         uploaded_urls.push(url);
                     }
@@ -119,7 +131,8 @@ pub async fn upload_photo_handler(
                                 message: "Failed to upload file".to_string(),
                                 internal_id: None,
                             }),
-                        );
+                        )
+                            .into_response();
                     }
                 }
             }
@@ -132,7 +145,8 @@ pub async fn upload_photo_handler(
                         message: "Failed to read file".to_string(),
                         internal_id: None,
                     }),
-                );
+                )
+                    .into_response();
             }
         }
     }
@@ -145,6 +159,7 @@ pub async fn upload_photo_handler(
             internal_id: Some(id),
         }),
     )
+        .into_response()
 }
 
 pub async fn health_check() -> impl IntoResponse {
