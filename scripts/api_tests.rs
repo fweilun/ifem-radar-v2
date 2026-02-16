@@ -2,11 +2,13 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use argon2::password_hash::{rand_core::OsRng, SaltString};
+use argon2::{Argon2, PasswordHasher};
 use dotenvy::dotenv;
 use http_body_util::BodyExt; // for collect
 use ifem_radar_v2::models::{CreateSurveyRequest, SurveyCategory, SurveyDetails};
 use ifem_radar_v2::{create_router, database, storage};
-use sqlx::postgres::PgPoolOptions;
+use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use std::env;
 use tower::ServiceExt; // for oneshot
 
@@ -32,6 +34,66 @@ async fn setup() -> database::AppState {
     }
 }
 
+async fn ensure_test_account(pool: &Pool<Postgres>, account: &str, password: &str) {
+    let salt = SaltString::generate(&mut OsRng);
+    let password_hash = Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .expect("Failed to hash password")
+        .to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO account_info (id, account, password_hash, is_active)
+        VALUES ($1, $2, $3, TRUE)
+        ON CONFLICT (account) DO UPDATE
+        SET password_hash = EXCLUDED.password_hash,
+            is_active = TRUE
+        "#,
+    )
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(account)
+    .bind(password_hash)
+    .execute(pool)
+    .await
+    .expect("Failed to upsert test account");
+}
+
+async fn login_token(state: database::AppState) -> String {
+    let app = create_router(state);
+
+    let account = env::var("AUTH_ACCOUNT").unwrap_or_else(|_| "admin".to_string());
+    let password = env::var("AUTH_PASSWORD").unwrap_or_else(|_| "admin".to_string());
+
+    ensure_test_account(&state.db, &account, &password).await;
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "account": account,
+                        "password": password
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    body_json["access_token"]
+        .as_str()
+        .expect("access_token must be string")
+        .to_string()
+}
+
 #[cfg(feature = "integration")]
 #[tokio::test]
 async fn test_health_check() {
@@ -55,6 +117,7 @@ async fn test_health_check() {
 #[tokio::test]
 async fn test_create_survey() {
     let state = setup().await;
+    let token = login_token(state.clone()).await;
     let app = create_router(state);
 
     let survey_id = uuid::Uuid::new_v4().to_string();
@@ -86,6 +149,7 @@ async fn test_create_survey() {
             Request::builder()
                 .method("POST")
                 .uri("/api/surveys")
+                .header("authorization", format!("Bearer {}", token))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&payload).unwrap()))
                 .unwrap(),
@@ -106,6 +170,7 @@ async fn test_create_survey() {
 #[tokio::test]
 async fn test_upload_photo() {
     let state = setup().await;
+    let token = login_token(state.clone()).await;
     let app = create_router(state.clone());
 
     // 1. Create a survey record first
@@ -156,6 +221,7 @@ async fn test_upload_photo() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/surveys/{}/photos", survey_id))
+                .header("authorization", format!("Bearer {}", token))
                 .header(
                     "content-type",
                     format!("multipart/form-data; boundary={}", boundary),

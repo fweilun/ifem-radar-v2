@@ -1,4 +1,5 @@
 use crate::models::{CreateSurveyRequest, SurveyCategory, SurveyDetails, SurveyRecord};
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use sqlx::{postgres::PgPoolOptions, types::Json, Pool, Postgres, QueryBuilder};
@@ -16,6 +17,40 @@ pub async fn connect_db(database_url: &str) -> Result<Pool<Postgres>> {
         .connect(database_url)
         .await?;
     Ok(pool)
+}
+
+pub async fn check_account(
+    pool: &Pool<Postgres>,
+    username: &str,
+    password: &str,
+) -> Result<bool> {
+    let stored_hash: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT password_hash
+        FROM account_info
+        WHERE account = $1 AND is_active = TRUE
+        LIMIT 1
+        "#,
+    )
+    .bind(username)
+    .fetch_optional(pool)
+    .await?;
+
+    let Some(stored_hash) = stored_hash else {
+        return Ok(false);
+    };
+
+    let parsed = match PasswordHash::new(&stored_hash) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            tracing::error!("Invalid password hash for account {}: {:?}", username, err);
+            return Ok(false);
+        }
+    };
+
+    Ok(Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok())
 }
 
 pub async fn create_survey_record(
@@ -181,6 +216,8 @@ pub async fn list_surveys(
         }
         qb.push("created_at <= ").push_bind(created_to);
     }
+
+    let _ = has_where;
 
     qb.push(" ORDER BY created_at DESC");
 

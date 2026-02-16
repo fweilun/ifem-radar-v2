@@ -1,3 +1,4 @@
+use crate::auth::Claims;
 use crate::database::{self, AppState, SurveyQueryFilters};
 use crate::models::{ApiResponse, CreateSurveyRequest};
 use crate::storage;
@@ -31,6 +32,7 @@ fn parse_rfc3339(opt: Option<String>) -> Result<Option<DateTime<Utc>>, String> {
 }
 
 pub async fn create_survey_handler(
+    _claims: Claims,
     State(state): State<AppState>,
     Json(payload): Json<CreateSurveyRequest>,
 ) -> impl IntoResponse {
@@ -58,6 +60,7 @@ pub async fn create_survey_handler(
 }
 
 pub async fn upload_photo_handler(
+    _claims: Claims,
     State(state): State<AppState>,
     Path(id): Path<String>,
     mut multipart: Multipart,

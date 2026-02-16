@@ -6,15 +6,31 @@
 @to = 2024-12-31T23:59:59Z
 @limit = 20
 @offset = 0
+@account = alice
+@password = P@ssw0rd
 
 ### Health check
 GET {{baseUrl}}/health
 # curl http://localhost:8080/health
 
+### Login (get JWT)
+# @name login
+POST {{baseUrl}}/api/login
+Content-Type: application/json
+
+{
+  "account": "{{account}}",
+  "password": "{{password}}"
+}
+# curl -X POST http://localhost:8080/api/login \
+#  -H "Content-Type: application/json" \
+#  -d '{"account":"alice","password":"P@ssw0rd"}'
+
 ### Create survey (store response as createSurvey)
 # @name createSurvey
 POST {{baseUrl}}/api/surveys
 Content-Type: application/json
+Authorization: Bearer {{login.response.body.access_token}}
 
 {
   "id": "{{$guid}}",
@@ -45,6 +61,7 @@ Content-Type: application/json
 ### Upload photo (multipart)
 POST {{baseUrl}}/api/surveys/{{createSurvey.response.body.internal_id}}/photos
 Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+Authorization: Bearer {{login.response.body.access_token}}
 
 ------WebKitFormBoundary7MA4YWxkTrZu0gW
 Content-Disposition: form-data; name="file"; filename="test.txt"

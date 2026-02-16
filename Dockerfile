@@ -15,7 +15,7 @@ COPY .sqlx ./.sqlx
 
 # Build with SQLX_OFFLINE=true
 ENV SQLX_OFFLINE=true
-RUN cargo build --release
+RUN cargo build --release --bin ifem-radar-v2
 
 # Runtime stage
 FROM docker.io/library/ubuntu:24.04

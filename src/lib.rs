@@ -2,6 +2,7 @@ pub mod database;
 pub mod handlers;
 pub mod models;
 pub mod storage;
+pub mod auth;
 
 use axum::{
     routing::{get, post},
@@ -13,6 +14,7 @@ use tower_http::trace::TraceLayer;
 pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(handlers::health_check))
+        .route("/api/login", post(auth::login))
         .route(
             "/api/surveys",
             get(handlers::list_surveys_handler).post(handlers::create_survey_handler),
