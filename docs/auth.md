@@ -6,7 +6,7 @@ This document describes the current authentication design and the relevant parts
 - Auth method: JWT (Bearer token in `Authorization` header).
 - Login: `POST /api/login` with `account` + `password`.
 - Passwords: stored as Argon2 hashes in `account_info.password_hash`.
-- Protected routes: currently `POST /api/surveys` and `POST /api/surveys/:id/photos`.
+- Protected routes: currently `POST /api/surveys`, `POST /api/surveys/upload-url`, `POST /api/surveys/complete`.
 - JWT claims: `account`, `exp`.
 
 ## Data Model
@@ -193,17 +193,33 @@ pub async fn create_survey_handler(
     }
 }
 
-pub async fn upload_photo_handler(
+pub async fn create_upload_url_handler(
     headers: HeaderMap,
     State(state): State<AppState>,
-    Path(id): Path<String>,
-    mut multipart: Multipart,
-) -> impl IntoResponse {
+    Json(payload): Json<PresignUploadRequest>,
+) -> Response {
     if let Err(err) = auth::claims_from_headers(&headers) {
         return err.into_response();
     }
 
-    // ... existing upload flow ...
+    // validate payload, ensure survey exists, generate file_key
+    let upload_url = storage::presign_put_url(...).await?;
+    let response = PresignUploadResponse { ... };
+    (StatusCode::OK, Json(response)).into_response()
+}
+
+pub async fn complete_upload_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Json(payload): Json<CompleteUploadRequest>,
+) -> Response {
+    if let Err(err) = auth::claims_from_headers(&headers) {
+        return err.into_response();
+    }
+
+    // validate file_key and survey, then persist URL
+    database::add_photo_url(&state.db, &payload.survey_id, &url).await?;
+    (StatusCode::OK, Json(ApiResponse { ... })).into_response()
 }
 ```
 

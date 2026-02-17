@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::{config::Region, Client};
+use aws_sdk_s3::presigning::PresigningConfig;
+use std::time::Duration;
 
 pub async fn init_s3_client() -> Client {
     let region_provider = RegionProviderChain::default_provider().or_else(Region::new("us-east-1"));
@@ -54,10 +56,31 @@ pub async fn upload_file(
     // Constructing URL depends on setup (public URL vs internal).
     // For now, return the key or a constructed path.
     // If endpoint is set, we might prepend it.
+    Ok(build_object_url(bucket, key))
+}
+
+pub fn build_object_url(bucket: &str, key: &str) -> String {
     let endpoint = std::env::var("AWS_ENDPOINT_URL").unwrap_or_default();
     if !endpoint.is_empty() {
-        Ok(format!("{}/{}/{}", endpoint, bucket, key))
+        format!("{}/{}/{}", endpoint, bucket, key)
     } else {
-        Ok(format!("s3://{}/{}", bucket, key))
+        format!("s3://{}/{}", bucket, key)
     }
+}
+
+pub async fn presign_put_url(
+    client: &Client,
+    bucket: &str,
+    key: &str,
+    content_type: Option<&str>,
+    expires_in_secs: u64,
+) -> Result<String> {
+    let mut req = client.put_object().bucket(bucket).key(key);
+    if let Some(content_type) = content_type {
+        req = req.content_type(content_type);
+    }
+
+    let config = PresigningConfig::expires_in(Duration::from_secs(expires_in_secs))?;
+    let presigned = req.presigned(config).await?;
+    Ok(presigned.uri().to_string())
 }

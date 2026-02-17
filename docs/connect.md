@@ -1,15 +1,16 @@
 # API Connection Guide
 
-This document explains how to connect to the current endpoints, the login + upload workflow, and how to initialize user accounts.
+This document explains the current endpoints, the login + upload workflow, and how to initialize user accounts.
 
 **Base URL**
 - Local: `http://localhost:8080`
-- Health check: `GET /health`
+- Health check: `GET /health` (returns `OK`)
 
 **Auth Model**
-- Login returns a JWT.
+- Login returns a JWT (expires in 24 hours).
 - Protected endpoints require `Authorization: Bearer <token>`.
-- Protected endpoints: `POST /api/surveys`, `POST /api/surveys/:id/photos`.
+- Protected endpoints: `POST /api/surveys`, `POST /api/surveys/upload-url`, `POST /api/surveys/complete`.
+- Public endpoints: `GET /api/surveys`, `GET /api/surveys/<SURVEY_ID>`, `GET /health`.
 
 ## Workflow (Happy Path)
 ### 1) Login
@@ -28,6 +29,8 @@ Response:
 ```
 
 ### 2) Create Survey
+Returns `201 Created` on success.
+
 Request:
 ```bash
 curl -X POST http://localhost:8080/api/surveys \
@@ -64,22 +67,69 @@ Response:
 }
 ```
 
-### 3) Upload Photo(s)
-- Endpoint: `POST /api/surveys/:id/photos`
-- Accepts multipart form-data with field name `file`.
-- Multiple files can be included in one request (handler iterates all fields).
+### 3) Upload Photo(s) via Presigned PUT (Recommended)
+This flow avoids pushing large files through the backend.
+
+#### 3.1 Request presigned upload URL
+Endpoint: `POST /api/surveys/upload-url`
+
+Required fields: `survey_id`, `filename`.
+Optional fields: `content_type` (default `application/octet-stream`), `expires_in` (seconds, clamped to 60..=3600, default 900).
 
 Request:
 ```bash
-curl -X POST http://localhost:8080/api/surveys/<SURVEY_ID>/photos \
+curl -X POST http://localhost:8080/api/surveys/upload-url \
   -H "Authorization: Bearer <JWT>" \
-  -F "file=@./path/to/photo.jpg;type=image/jpeg"
+  -H "Content-Type: application/json" \
+  -d '{
+    "survey_id":"<SURVEY_ID>",
+    "filename":"photo.jpg",
+    "content_type":"image/jpeg",
+    "expires_in":900
+  }'
 ```
+
+Response:
+```json
+{
+  "upload_url": "<PRESIGNED_PUT_URL>",
+  "file_key": "surveys/<SURVEY_ID>/<UUID>.jpg",
+  "expires_in": 900,
+  "required_headers": [
+    { "name": "Content-Type", "value": "image/jpeg" }
+  ]
+}
+```
+
+#### 3.2 Upload directly to MinIO/S3
+Use the `required_headers` from the response.
+
+```bash
+curl -X PUT "<PRESIGNED_PUT_URL>" \
+  -H "Content-Type: image/jpeg" \
+  --data-binary @./path/to/photo.jpg
+```
+
+#### 3.3 Notify backend upload completed
+Endpoint: `POST /api/surveys/complete`
+
+The `file_key` must start with `surveys/<SURVEY_ID>/` and should be the value returned from step 3.1.
+
+```bash
+curl -X POST http://localhost:8080/api/surveys/complete \
+  -H "Authorization: Bearer <JWT>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "survey_id":"<SURVEY_ID>",
+    "file_key":"surveys/<SURVEY_ID>/<UUID>.jpg"
+  }'
+```
+
 Response:
 ```json
 {
   "success": true,
-  "message": "Uploaded 1 photos",
+  "message": "Photo upload completed",
   "internal_id": "<SURVEY_ID>"
 }
 ```
@@ -93,6 +143,8 @@ curl http://localhost:8080/api/surveys/<SURVEY_ID>
 ### List Surveys
 Supported query params: `category`, `start_point`, `end_point`, `created_from`, `created_to`, `limit`, `offset`.
 - `created_from` / `created_to` must be RFC3339 (e.g., `2024-01-01T00:00:00Z`).
+- `limit` defaults to 50 and is capped at 200.
+- `offset` is applied only when greater than 0.
 
 ```bash
 curl "http://localhost:8080/api/surveys?limit=20&offset=0"
@@ -121,9 +173,6 @@ cargo run --bin create_account -- alice P@ssw0rd "Alice Chen" admin
 - `id` (UUID string)
 - `start_point`, `end_point`, `orientation`, `distance`, `top_distance`
 - `category`: `ConnectingPipe`, `CrossingPipe`, `BoxDamage`, `AttachmentLoss`, `Siltation`, `SectionChange`, `CannotPass`, `Unknown`
-- `details`:
-  - `diameter`, `length`, `width`, `protrusion`, `siltation_depth`, `crossing_pipe_count`
-  - `change_of_area` (object `{ width, height, change_width, change_height }`)
-  - `issues` (array of strings)
+- `details`: object with `diameter`, `length`, `width`, `protrusion`, `siltation_depth`, `crossing_pipe_count`, `change_of_area` (object `{ width, height, change_width, change_height }`), `issues` (array of strings, optional)
 - `remarks` (optional)
 - `awaiting_photo_count` (int)

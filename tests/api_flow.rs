@@ -8,6 +8,7 @@ use argon2::{Argon2, PasswordHasher};
 use http_body_util::BodyExt;
 use ifem_radar_v2::models::{CreateSurveyRequest, SurveyCategory, SurveyDetails};
 use ifem_radar_v2::{create_router, database, storage};
+use reqwest::Client;
 use sqlx::postgres::PgPoolOptions;
 use std::collections::HashSet;
 use std::env;
@@ -189,41 +190,90 @@ async fn test_api_flow_happy_path() {
         );
         created_survey_id = Some(survey_id.clone());
 
-        let boundary = "------------------------14737809831466499882746641449";
-        let file_content = "fake image content";
-        let body = format!(
-            "--{boundary}\r\n\
-             Content-Disposition: form-data; name=\"file\"; filename=\"test_photo.txt\"\r\n\
-             Content-Type: text/plain\r\n\
-             \r\n\
-             {file_content}\r\n\
-             --{boundary}--\r\n",
-            boundary = boundary,
-            file_content = file_content
-        );
-
-        let upload_response = app
+        let upload_url_response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/surveys/{}/photos", survey_id))
+                    .uri("/api/surveys/upload-url")
                     .header("authorization", format!("Bearer {}", token))
-                    .header(
-                        "content-type",
-                        format!("multipart/form-data; boundary={}", boundary),
-                    )
-                    .body(Body::from(body))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "survey_id": survey_id,
+                            "filename": "test_photo.txt",
+                            "content_type": "text/plain"
+                        })
+                        .to_string(),
+                    ))
                     .unwrap(),
             )
             .await?;
 
-        let upload_status = upload_response.status();
-        if upload_status != StatusCode::OK {
-            let body = upload_response.into_body().collect().await?.to_bytes();
+        anyhow::ensure!(
+            upload_url_response.status() == StatusCode::OK,
+            "create upload url failed"
+        );
+        let body = upload_url_response
+            .into_body()
+            .collect()
+            .await?
+            .to_bytes();
+        let body_json: serde_json::Value = serde_json::from_slice(&body)?;
+        let upload_url = body_json["upload_url"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing upload_url"))?
+            .to_string();
+        let file_key = body_json["file_key"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing file_key"))?
+            .to_string();
+        let content_type = body_json["required_headers"]
+            .as_array()
+            .and_then(|items| items.iter().find(|item| item["name"] == "Content-Type"))
+            .and_then(|item| item["value"].as_str())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+
+        let http_client = Client::new();
+        let put_response = http_client
+            .put(&upload_url)
+            .header("Content-Type", content_type)
+            .body("fake image content")
+            .send()
+            .await
+            .context("presigned upload request failed")?;
+
+        anyhow::ensure!(
+            put_response.status().is_success(),
+            "presigned upload failed"
+        );
+
+        let complete_response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/surveys/complete")
+                    .header("authorization", format!("Bearer {}", token))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "survey_id": survey_id,
+                            "file_key": file_key
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await?;
+
+        let complete_status = complete_response.status();
+        if complete_status != StatusCode::OK {
+            let body = complete_response.into_body().collect().await?.to_bytes();
             let body_str = String::from_utf8_lossy(&body);
             return Err(anyhow::anyhow!(
-                "upload failed: status={} body={}",
-                upload_status,
+                "complete upload failed: status={} body={}",
+                complete_status,
                 body_str
             ));
         }

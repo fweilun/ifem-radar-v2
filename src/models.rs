@@ -94,6 +94,34 @@ pub struct ApiResponse {
     pub internal_id: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PresignUploadRequest {
+    pub survey_id: String,
+    pub filename: String,
+    pub content_type: Option<String>,
+    pub expires_in: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PresignUploadResponse {
+    pub upload_url: String,
+    pub file_key: String,
+    pub expires_in: u64,
+    pub required_headers: Vec<PresignHeader>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PresignHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CompleteUploadRequest {
+    pub survey_id: String,
+    pub file_key: String,
+}
+
 // Request DTO (what the client sends)
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateSurveyRequest {

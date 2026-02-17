@@ -8,6 +8,7 @@ use dotenvy::dotenv;
 use http_body_util::BodyExt; // for collect
 use ifem_radar_v2::models::{CreateSurveyRequest, SurveyCategory, SurveyDetails};
 use ifem_radar_v2::{create_router, database, storage};
+use reqwest::Client;
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use std::env;
 use tower::ServiceExt; // for oneshot
@@ -201,39 +202,78 @@ async fn test_upload_photo() {
         .await
         .expect("Failed to create survey record");
 
-    // 2. Construct Multipart Body
-    let boundary = "------------------------14737809831466499882746641449";
-    let file_content = "fake image content";
-    let body = format!(
-        "--{boundary}\r\n\
-         Content-Disposition: form-data; name=\"file\"; filename=\"test_photo.txt\"\r\n\
-         Content-Type: text/plain\r\n\
-         \r\n\
-         {file_content}\r\n\
-         --{boundary}--\r\n",
-        boundary = boundary,
-        file_content = file_content
-    );
-
-    // 3. Send Request
-    let response = app
+    // 2. Request presigned upload URL
+    let upload_url_response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/surveys/{}/photos", survey_id))
+                .uri("/api/surveys/upload-url")
                 .header("authorization", format!("Bearer {}", token))
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={}", boundary),
-                )
-                .body(Body::from(body))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "survey_id": survey_id,
+                        "filename": "test_photo.txt",
+                        "content_type": "text/plain"
+                    })
+                    .to_string(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    // 4. Verify Response
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(upload_url_response.status(), StatusCode::OK);
+
+    let body = upload_url_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let upload_url = body_json["upload_url"].as_str().unwrap().to_string();
+    let file_key = body_json["file_key"].as_str().unwrap().to_string();
+    let content_type = body_json["required_headers"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["name"] == "Content-Type"))
+        .and_then(|item| item["value"].as_str())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+
+    // 3. Upload directly to MinIO/S3
+    let http_client = Client::new();
+    let put_response = http_client
+        .put(&upload_url)
+        .header("Content-Type", content_type)
+        .body("fake image content")
+        .send()
+        .await
+        .unwrap();
+    assert!(put_response.status().is_success());
+
+    // 4. Complete upload
+    let complete_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/surveys/complete")
+                .header("authorization", format!("Bearer {}", token))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "survey_id": survey_id,
+                        "file_key": file_key
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // 5. Verify Response
+    assert_eq!(complete_response.status(), StatusCode::OK);
 
     // let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
     // let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();

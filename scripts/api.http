@@ -58,19 +58,33 @@ Authorization: Bearer {{login.response.body.access_token}}
 #  -H "Content-Type: application/json" \
 #  -d '{"id":"00000000-0000-0000-0000-000000000000","start_point":"A","end_point":"B","orientation":"Left","distance":10.5,"top_distance":">0","category":"ConnectingPipe","details":{"diameter":100,"length":null,"width":null,"protrusion":null,"siltation_depth":null,"crossing_pipe_count":null,"change_of_area":null,"issues":["Crack"]},"remarks":"Test remark","awaiting_photo_count":2}'
 
-### Upload photo (multipart)
-POST {{baseUrl}}/api/surveys/{{createSurvey.response.body.internal_id}}/photos
-Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+### Presigned upload URL
+# @name uploadUrl
+POST {{baseUrl}}/api/surveys/upload-url
+Content-Type: application/json
 Authorization: Bearer {{login.response.body.access_token}}
 
-------WebKitFormBoundary7MA4YWxkTrZu0gW
-Content-Disposition: form-data; name="file"; filename="test.txt"
+{
+  "survey_id": "{{createSurvey.response.body.internal_id}}",
+  "filename": "photo.txt",
+  "content_type": "text/plain"
+}
+
+### Upload to presigned URL (direct to MinIO/S3)
+PUT {{uploadUrl.response.body.upload_url}}
 Content-Type: text/plain
 
-hello from api.http
-------WebKitFormBoundary7MA4YWxkTrZu0gW--
-# curl -X POST http://localhost:8080/api/surveys/<SURVEY_ID>/photos \
-#  -F "file=@./tests/fixtures/test.txt;type=text/plain"
+hello from presigned upload
+
+### Complete upload (write to DB)
+POST {{baseUrl}}/api/surveys/complete
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.access_token}}
+
+{
+  "survey_id": "{{createSurvey.response.body.internal_id}}",
+  "file_key": "{{uploadUrl.response.body.file_key}}"
+}
 
 ### Get survey by id (use id from createSurvey)
 GET {{baseUrl}}/api/surveys/{{createSurvey.response.body.internal_id}}
