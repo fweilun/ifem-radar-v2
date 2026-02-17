@@ -11,4 +11,6 @@ docker compose down -v --remove-orphans
 
 docker compose up -d
 
+cargo run --bin create_account -- alice P@ssw0rd "Alice Chen" admin
+
 printf '\nReset complete.\n'
