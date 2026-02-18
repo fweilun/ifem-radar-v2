@@ -17,7 +17,7 @@ services:
       - createbuckets
 
   db:
-    image: postgres:latest
+    image: postgres:16
     environment:
       - POSTGRES_USER=ifemfweilun
       - POSTGRES_PASSWORD=P@ssw0rdIfem
