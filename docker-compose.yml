@@ -5,7 +5,8 @@ services:
       - "8080:8080"
     environment:
       - DATABASE_URL=postgres://ifemfweilun:P@ssw0rdIfem@db:5432/ifem_radar
-      - AWS_ENDPOINT_URL=http://minio:9000
+      - AWS_PUBLIC_ENDPOINT_URL=${AWS_PUBLIC_ENDPOINT_URL}
+      - AWS_ENDPOINT_URL=http://localhost:9000
       - AWS_BUCKET_NAME=ifem-radar
       - AWS_ACCESS_KEY_ID=minioadmin
       - AWS_SECRET_ACCESS_KEY=minioadmin

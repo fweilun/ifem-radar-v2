@@ -5,6 +5,21 @@ use aws_sdk_s3::{config::Region, Client};
 use aws_sdk_s3::presigning::PresigningConfig;
 use std::time::Duration;
 
+fn env_non_empty(key: &str) -> Option<String> {
+    std::env::var(key).ok().and_then(|value| {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
+fn public_endpoint_url() -> Option<String> {
+    env_non_empty("AWS_PUBLIC_ENDPOINT_URL")
+}
+
 pub async fn init_s3_client() -> Client {
     let region_provider = RegionProviderChain::default_provider().or_else(Region::new("us-east-1"));
     let config = aws_config::defaults(BehaviorVersion::latest())
@@ -60,12 +75,40 @@ pub async fn upload_file(
 }
 
 pub fn build_object_url(bucket: &str, key: &str) -> String {
-    let endpoint = std::env::var("AWS_ENDPOINT_URL").unwrap_or_default();
+    let endpoint = public_endpoint_url()
+        .or_else(|| env_non_empty("AWS_ENDPOINT_URL"))
+        .unwrap_or_default();
     if !endpoint.is_empty() {
-        format!("{}/{}/{}", endpoint, bucket, key)
+        format!("{}/{}/{}", endpoint.trim_end_matches('/'), bucket, key)
     } else {
         format!("s3://{}/{}", bucket, key)
     }
+}
+
+pub fn rewrite_presigned_url(url: &str) -> Result<String> {
+    let public_endpoint = public_endpoint_url()
+        .ok_or_else(|| anyhow::anyhow!("AWS_PUBLIC_ENDPOINT_URL must be set"))?;
+
+    if !public_endpoint.contains("://") {
+        return Err(anyhow::anyhow!(
+            "AWS_PUBLIC_ENDPOINT_URL must include scheme (e.g. http:// or https://)"
+        ));
+    }
+
+    let scheme_end = url
+        .find("://")
+        .map(|idx| idx + 3)
+        .ok_or_else(|| anyhow::anyhow!("presigned url missing scheme"))?;
+    let after_scheme = &url[scheme_end..];
+    let path_start = after_scheme
+        .find('/')
+        .ok_or_else(|| anyhow::anyhow!("presigned url missing path"))?;
+    let path_and_query = &after_scheme[path_start..];
+    Ok(format!(
+        "{}{}",
+        public_endpoint.trim_end_matches('/'),
+        path_and_query
+    ))
 }
 
 pub async fn presign_put_url(

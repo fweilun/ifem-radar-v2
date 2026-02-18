@@ -49,6 +49,7 @@ async fn setup() -> database::AppState {
         "postgres://ifemfweilun:P@ssw0rdIfem@localhost:5432/ifem_radar",
     );
     set_default_env("AWS_ENDPOINT_URL", "http://localhost:9000");
+    set_default_env("AWS_PUBLIC_ENDPOINT_URL", "http://localhost:9000");
     set_default_env("AWS_ACCESS_KEY_ID", "minioadmin");
     set_default_env("AWS_SECRET_ACCESS_KEY", "minioadmin");
     set_default_env("AWS_REGION", "us-east-1");

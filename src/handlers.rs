@@ -149,6 +149,18 @@ pub async fn create_upload_url_handler(
         }
     };
 
+    let upload_url = match storage::rewrite_presigned_url(&upload_url) {
+        Ok(url) => url,
+        Err(err) => {
+            tracing::error!("Failed to rewrite presigned url: {:?}", err);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to create upload url",
+            )
+                .into_response();
+        }
+    };
+
     let response = PresignUploadResponse {
         upload_url,
         file_key,
