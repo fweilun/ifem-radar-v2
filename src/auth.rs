@@ -134,8 +134,8 @@ pub async fn login(
         exp,
     };
 
-    let token =
-        encode(&Header::default(), &claims, &KEYS.encoding).map_err(|_| AuthError::TokenCreation)?;
+    let token = encode(&Header::default(), &claims, &KEYS.encoding)
+        .map_err(|_| AuthError::TokenCreation)?;
 
     Ok(Json(AuthBody::new(token)))
 }

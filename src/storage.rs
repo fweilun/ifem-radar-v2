@@ -3,6 +3,11 @@ use aws_config::{meta::region::RegionProviderChain, BehaviorVersion};
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::{config::Region, Client};
 
+pub struct StoredObject {
+    pub bytes: Vec<u8>,
+    pub content_type: Option<String>,
+}
+
 pub async fn init_s3_client() -> Client {
     let region_provider = RegionProviderChain::default_provider().or_else(Region::new("us-east-1"));
     let config = aws_config::defaults(BehaviorVersion::latest())
@@ -59,5 +64,32 @@ pub async fn upload_file(
         Ok(format!("{}/{}/{}", endpoint, bucket, key))
     } else {
         Ok(format!("s3://{}/{}", bucket, key))
+    }
+}
+
+pub async fn get_file(client: &Client, bucket: &str, key: &str) -> Result<Option<StoredObject>> {
+    match client.get_object().bucket(bucket).key(key).send().await {
+        Ok(output) => {
+            let content_type = output.content_type().map(ToString::to_string);
+            let bytes = output
+                .body
+                .collect()
+                .await
+                .context("Failed to read object body")?
+                .into_bytes()
+                .to_vec();
+
+            Ok(Some(StoredObject {
+                bytes,
+                content_type,
+            }))
+        }
+        Err(err) => {
+            let err_str = err.to_string();
+            if err_str.contains("NoSuchKey") || err_str.contains("NotFound") {
+                return Ok(None);
+            }
+            Err(anyhow::anyhow!("Failed to get object: {}", err_str))
+        }
     }
 }

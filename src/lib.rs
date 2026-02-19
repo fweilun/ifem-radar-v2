@@ -1,8 +1,8 @@
+pub mod auth;
 pub mod database;
 pub mod handlers;
 pub mod models;
 pub mod storage;
-pub mod auth;
 
 use axum::{
     routing::{get, post},
@@ -24,6 +24,7 @@ pub fn create_router(state: AppState) -> Router {
             "/api/surveys/:id/photos",
             post(handlers::upload_photo_handler),
         )
+        .route("/api/photos/:id", get(handlers::get_photo_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

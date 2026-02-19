@@ -4,8 +4,7 @@ use crate::models::{ApiResponse, CreateSurveyRequest};
 use crate::storage;
 use axum::{
     extract::{Multipart, Path, Query, State},
-    http::HeaderMap,
-    http::StatusCode,
+    http::{header::CONTENT_TYPE, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -78,24 +77,18 @@ pub async fn upload_photo_handler(
 
     // Basic verification if record exists could be done here
 
-    let mut uploaded_urls = Vec::new();
+    let mut uploaded_photo_ids = Vec::new();
 
     while let Ok(Some(field)) = multipart.next_field().await {
-        let file_name = if let Some(name) = field.file_name() {
-            name.to_string()
-        } else {
-            uuid::Uuid::new_v4().to_string() + ".jpg"
-        };
-
         let content_type = field
             .content_type()
             .unwrap_or("application/octet-stream")
             .to_string();
+        let photo_id = uuid::Uuid::new_v4().to_string();
 
         match field.bytes().await {
             Ok(data) => {
-                // Generate a unique key: surveys/{id}/{uuid}-{filename}
-                let key = format!("surveys/{}/{}", id, file_name);
+                let key = photo_id.clone();
 
                 match storage::upload_file(
                     &state.s3_client,
@@ -106,9 +99,9 @@ pub async fn upload_photo_handler(
                 )
                 .await
                 {
-                    Ok(url) => {
+                    Ok(_) => {
                         // Update DB
-                        if let Err(e) = database::add_photo_url(&state.db, &id, &url).await {
+                        if let Err(e) = database::add_photo_url(&state.db, &id, &photo_id).await {
                             tracing::error!("Failed to update DB for photo: {:?}", e);
                             return (
                                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -120,7 +113,7 @@ pub async fn upload_photo_handler(
                             )
                                 .into_response();
                         }
-                        uploaded_urls.push(url);
+                        uploaded_photo_ids.push(photo_id);
                     }
                     Err(e) => {
                         tracing::error!("Failed to upload photo to S3: {:?}", e);
@@ -155,11 +148,41 @@ pub async fn upload_photo_handler(
         StatusCode::OK,
         Json(ApiResponse {
             success: true,
-            message: format!("Uploaded {} photos", uploaded_urls.len()),
+            message: format!("Uploaded {} photos", uploaded_photo_ids.len()),
             internal_id: Some(id),
         }),
     )
         .into_response()
+}
+
+pub async fn get_photo_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(err) = auth::claims_from_headers(&headers) {
+        return err.into_response();
+    }
+
+    match storage::get_file(&state.s3_client, &state.bucket_name, &id).await {
+        Ok(Some(object)) => {
+            let mut response = Response::new(axum::body::Body::from(object.bytes));
+            let content_type = object
+                .content_type
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let header_value = HeaderValue::from_str(&content_type)
+                .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
+
+            *response.status_mut() = StatusCode::OK;
+            response.headers_mut().insert(CONTENT_TYPE, header_value);
+            response
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, "Photo not found").into_response(),
+        Err(e) => {
+            tracing::error!("Failed to fetch photo: {:?}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch photo").into_response()
+        }
+    }
 }
 
 pub async fn health_check() -> impl IntoResponse {
@@ -175,11 +198,7 @@ pub async fn get_survey_handler(
         Ok(None) => (StatusCode::NOT_FOUND, "Not Found").into_response(),
         Err(e) => {
             tracing::error!("Failed to get survey: {:?}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to fetch record",
-            )
-                .into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch record").into_response()
         }
     }
 }
@@ -211,11 +230,7 @@ pub async fn list_surveys_handler(
         Ok(records) => (StatusCode::OK, Json(records)).into_response(),
         Err(e) => {
             tracing::error!("Failed to list surveys: {:?}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to fetch records",
-            )
-                .into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch records").into_response()
         }
     }
 }

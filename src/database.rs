@@ -1,6 +1,6 @@
 use crate::models::{CreateSurveyRequest, SurveyCategory, SurveyDetails, SurveyRecord};
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use anyhow::Result;
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use chrono::{DateTime, Utc};
 use sqlx::{postgres::PgPoolOptions, types::Json, Pool, Postgres, QueryBuilder};
 
@@ -19,11 +19,7 @@ pub async fn connect_db(database_url: &str) -> Result<Pool<Postgres>> {
     Ok(pool)
 }
 
-pub async fn check_account(
-    pool: &Pool<Postgres>,
-    username: &str,
-    password: &str,
-) -> Result<bool> {
+pub async fn check_account(pool: &Pool<Postgres>, username: &str, password: &str) -> Result<bool> {
     let stored_hash: Option<String> = sqlx::query_scalar(
         r#"
         SELECT password_hash
@@ -236,7 +232,10 @@ pub async fn list_surveys(
         }
     }
 
-    let rows = qb.build_query_as::<SurveyRecordRow>().fetch_all(pool).await?;
+    let rows = qb
+        .build_query_as::<SurveyRecordRow>()
+        .fetch_all(pool)
+        .await?;
     Ok(rows.into_iter().map(SurveyRecordRow::into_record).collect())
 }
 
@@ -259,8 +258,7 @@ pub async fn get_survey(pool: &Pool<Postgres>, id: &str) -> Result<Option<Survey
     // OR if transparent is used.
     // But let's proceed.
 
-    let result =
-        sqlx::query_as::<_, SurveyRecordRow>("SELECT * FROM survey_records WHERE id = $1")
+    let result = sqlx::query_as::<_, SurveyRecordRow>("SELECT * FROM survey_records WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
         .await?;

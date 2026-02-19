@@ -1,10 +1,10 @@
+use anyhow::Context;
+use argon2::password_hash::{rand_core::OsRng, SaltString};
+use argon2::{Argon2, PasswordHasher};
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
-use anyhow::Context;
-use argon2::password_hash::{rand_core::OsRng, SaltString};
-use argon2::{Argon2, PasswordHasher};
 use http_body_util::BodyExt;
 use ifem_radar_v2::models::{CreateSurveyRequest, SurveyCategory, SurveyDetails};
 use ifem_radar_v2::{create_router, database, storage};
@@ -13,10 +13,7 @@ use std::collections::HashSet;
 use std::env;
 use tower::ServiceExt;
 
-async fn ensure_bucket(
-    client: &aws_sdk_s3::Client,
-    bucket: &str,
-) -> Result<(), anyhow::Error> {
+async fn ensure_bucket(client: &aws_sdk_s3::Client, bucket: &str) -> Result<(), anyhow::Error> {
     if client.head_bucket().bucket(bucket).send().await.is_ok() {
         return Ok(());
     }
@@ -70,6 +67,10 @@ async fn setup() -> database::AppState {
 }
 
 fn extract_key_from_url(url: &str, bucket: &str) -> Option<String> {
+    if !url.contains("://") && !url.contains('/') {
+        return Some(url.to_string());
+    }
+
     if let Some(stripped) = url.strip_prefix("s3://") {
         let mut parts = stripped.splitn(2, '/');
         let bucket_part = parts.next()?;
@@ -81,8 +82,11 @@ fn extract_key_from_url(url: &str, bucket: &str) -> Option<String> {
     }
 
     let needle = format!("/{}/", bucket);
-    let idx = url.find(&needle)?;
-    Some(url[(idx + needle.len())..].to_string())
+    if let Some(idx) = url.find(&needle) {
+        return Some(url[(idx + needle.len())..].to_string());
+    }
+
+    None
 }
 
 #[cfg(feature = "integration")]
