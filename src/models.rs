@@ -14,9 +14,7 @@ pub struct SurveyRecord {
     pub category: SurveyCategory, // ex. 連接管、橫越館等
     pub details: Json<SurveyDetails>,
 
-    pub photo_urls: Vec<String>,   // 存放在 MinIO 的路徑
-    pub awaiting_photo_count: i32, // 剩餘待上傳照片張數
-    pub remarks: Option<String>,   // 備註
+    pub remarks: Option<String>, // 備註
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -94,32 +92,14 @@ pub struct ApiResponse {
     pub internal_id: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PresignUploadRequest {
+/// Metadata for a stored photo (excludes the binary blob).
+#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+pub struct PhotoRecord {
+    pub id: String,
     pub survey_id: String,
     pub filename: String,
-    pub content_type: Option<String>,
-    pub expires_in: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PresignUploadResponse {
-    pub upload_url: String,
-    pub file_key: String,
-    pub expires_in: u64,
-    pub required_headers: Vec<PresignHeader>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PresignHeader {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CompleteUploadRequest {
-    pub survey_id: String,
-    pub file_key: String,
+    pub content_type: String,
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 // Request DTO (what the client sends)
@@ -134,5 +114,4 @@ pub struct CreateSurveyRequest {
     pub category: SurveyCategory,
     pub details: SurveyDetails,
     pub remarks: Option<String>,
-    pub awaiting_photo_count: i32,
 }

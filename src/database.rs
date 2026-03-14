@@ -1,4 +1,4 @@
-use crate::models::{CreateSurveyRequest, SurveyCategory, SurveyDetails, SurveyRecord};
+use crate::models::{CreateSurveyRequest, PhotoRecord, SurveyCategory, SurveyDetails, SurveyRecord};
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -7,8 +7,6 @@ use sqlx::{postgres::PgPoolOptions, types::Json, Pool, Postgres, QueryBuilder};
 #[derive(Clone)]
 pub struct AppState {
     pub db: Pool<Postgres>,
-    pub s3_client: aws_sdk_s3::Client,
-    pub bucket_name: String,
 }
 
 pub async fn connect_db(database_url: &str) -> Result<Pool<Postgres>> {
@@ -57,56 +55,33 @@ pub async fn create_survey_record(
     pool: &Pool<Postgres>,
     req: CreateSurveyRequest,
 ) -> Result<String> {
-    // Serialize category to string to ensure compatibility with VARCHAR(50)
-    // or rely on sqlx implementation if configured correctly.
-    // Here we act safe and just cast via serde or Debug/Display if available,
-    // but assuming CreateSurveyRequest used the Enum.
-    // We can use serde_json::to_value to get the string representation if the Enum is unit-only.
-    // Or just impl ToString. Let's rely on serde serialization to string.
     let category_str = serde_json::to_string(&req.category)?
         .trim_matches('"')
         .to_string();
 
-    let rec = sqlx::query!(
+    let rec: (String,) = sqlx::query_as(
         r#"
         INSERT INTO survey_records (
             id, start_point, end_point, orientation, distance, top_distance,
-            category, details, awaiting_photo_count, remarks
+            category, details, remarks
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
         RETURNING id
         "#,
-        req.id,
-        req.start_point,
-        req.end_point,
-        req.orientation,
-        req.distance,
-        req.top_distance,
-        category_str,
-        Json(&req.details) as _, // Force sqlx to treat this as JSONB compatible
-        req.awaiting_photo_count,
-        req.remarks
     )
+    .bind(&req.id)
+    .bind(&req.start_point)
+    .bind(&req.end_point)
+    .bind(&req.orientation)
+    .bind(req.distance)
+    .bind(&req.top_distance)
+    .bind(&category_str)
+    .bind(Json(&req.details))
+    .bind(&req.remarks)
     .fetch_one(pool)
     .await?;
 
-    Ok(rec.id)
-}
-
-pub async fn add_photo_url(pool: &Pool<Postgres>, id: &str, url: &str) -> Result<()> {
-    sqlx::query!(
-        r#"
-        UPDATE survey_records
-        SET photo_urls = array_append(photo_urls, $2),
-            awaiting_photo_count = GREATEST(awaiting_photo_count - 1, 0)
-        WHERE id = $1
-        "#,
-        id,
-        url
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
+    Ok(rec.0)
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -119,8 +94,6 @@ struct SurveyRecordRow {
     pub top_distance: String,
     pub category: String,
     pub details: Json<SurveyDetails>,
-    pub photo_urls: Vec<String>,
-    pub awaiting_photo_count: i32,
     pub remarks: Option<String>,
     pub created_at: Option<DateTime<Utc>>,
 }
@@ -141,8 +114,6 @@ impl SurveyRecordRow {
             top_distance: self.top_distance,
             category: parse_category(&self.category),
             details: self.details,
-            photo_urls: self.photo_urls,
-            awaiting_photo_count: self.awaiting_photo_count,
             remarks: self.remarks,
             created_at: self.created_at,
         }
@@ -240,25 +211,7 @@ pub async fn list_surveys(
     Ok(rows.into_iter().map(SurveyRecordRow::into_record).collect())
 }
 
-#[allow(dead_code)]
 pub async fn get_survey(pool: &Pool<Postgres>, id: &str) -> Result<Option<SurveyRecord>> {
-    // We need to query. Since SurveyCategory is an enum,
-    // we assume we can read it back as string and cast,
-    // or we use query_as! if types match.
-    // However, sqlx macros check DB types. The DB type is VARCHAR.
-    // The struct type is SurveyCategory.
-    // Automated mapping might fail if sqlx doesn't know how to go VARCHAR -> Enum.
-    // We'll use manual query_as or just query and map.
-    // For simplicity, let's use `sqlx::query_as` which is runtime-checked (mostly)
-    // or defining a manual row mapper is safer.
-
-    // Actually, let's try `query_as` with the struct details.
-    // Note: This requires SurveyCategory to impl sqlx::Type<Postgres> and accept VARCHAR.
-    // If not, this might fail at runtime.
-    // Given usage of `sqlx::Type` in models.rs, it should be fine IF the type names matched
-    // OR if transparent is used.
-    // But let's proceed.
-
     let result =
         sqlx::query_as::<_, SurveyRecordRow>("SELECT * FROM survey_records WHERE id = $1")
         .bind(id)
@@ -266,4 +219,96 @@ pub async fn get_survey(pool: &Pool<Postgres>, id: &str) -> Result<Option<Survey
         .await?;
 
     Ok(result.map(SurveyRecordRow::into_record))
+}
+
+// ── Photo blob CRUD ──────────────────────────────────────────────────────────
+
+/// Persist a photo blob and return its generated ID.
+pub async fn create_photo(
+    pool: &Pool<Postgres>,
+    survey_id: &str,
+    filename: &str,
+    content_type: &str,
+    data: Vec<u8>,
+) -> Result<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO survey_photos (id, survey_id, filename, content_type, data)
+        VALUES ($1, $2, $3, $4, $5)
+        "#,
+    )
+    .bind(&id)
+    .bind(survey_id)
+    .bind(filename)
+    .bind(content_type)
+    .bind(&data)
+    .execute(pool)
+    .await?;
+    Ok(id)
+}
+
+/// List photo metadata for a survey (no blob data).
+pub async fn list_photos(pool: &Pool<Postgres>, survey_id: &str) -> Result<Vec<PhotoRecord>> {
+    let rows = sqlx::query_as::<_, PhotoRecord>(
+        r#"
+        SELECT id, survey_id, filename, content_type, created_at
+        FROM survey_photos
+        WHERE survey_id = $1
+        ORDER BY created_at ASC
+        "#,
+    )
+    .bind(survey_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+/// Fetch a single photo's metadata and binary data.
+pub async fn get_photo_data(
+    pool: &Pool<Postgres>,
+    photo_id: &str,
+) -> Result<Option<(PhotoRecord, Vec<u8>)>> {
+    #[derive(sqlx::FromRow)]
+    struct PhotoRow {
+        id: String,
+        survey_id: String,
+        filename: String,
+        content_type: String,
+        data: Vec<u8>,
+        created_at: Option<DateTime<Utc>>,
+    }
+
+    let row = sqlx::query_as::<_, PhotoRow>(
+        r#"
+        SELECT id, survey_id, filename, content_type, data, created_at
+        FROM survey_photos
+        WHERE id = $1
+        "#,
+    )
+    .bind(photo_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| {
+        (
+            PhotoRecord {
+                id: r.id,
+                survey_id: r.survey_id,
+                filename: r.filename,
+                content_type: r.content_type,
+                created_at: r.created_at,
+            },
+            r.data,
+        )
+    }))
+}
+
+/// Delete a photo by ID. Returns `true` if a row was deleted.
+pub async fn delete_photo(pool: &Pool<Postgres>, photo_id: &str) -> Result<bool> {
+    let result = sqlx::query("DELETE FROM survey_photos WHERE id = $1")
+        .bind(photo_id)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected() > 0)
 }

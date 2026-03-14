@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ "${1:-}" != "--yes" ]]; then
-  echo "This will DELETE local Docker volumes (postgres_data, minio_data) and all data."
+  echo "This will DELETE local Docker volumes (postgres_data) and all data."
   echo "Run: $0 --yes"
   exit 1
 fi

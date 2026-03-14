@@ -19,8 +19,6 @@ dotenvy = "0.15"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-aws-config = "1.1"
-aws-sdk-s3 = "1.14"
 anyhow = "1.0"
 tree-sitter = "0.26.3"
 tree-sitter-python = "0.25.0"
@@ -32,7 +30,6 @@ argon2 = "0.5"
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
-mime = "0.3"
 reqwest = { version = "0.11", features = ["json", "multipart"] }
 
 [features]
@@ -41,3 +38,7 @@ integration = []
 [[bin]]
 name = "create_account"
 path = "scripts/create_account.rs"
+
+[[test]]
+name = "api_tests"
+path = "scripts/api_tests.rs"
