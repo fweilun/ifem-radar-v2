@@ -1,18 +1,13 @@
 use crate::auth;
 use crate::database::{self, AppState, SurveyQueryFilters};
-use crate::models::{
-    ApiResponse, CompleteUploadRequest, CreateSurveyRequest, PresignHeader, PresignUploadRequest,
-    PresignUploadResponse,
-};
-use crate::storage;
+use crate::models::{ApiResponse, CreateSurveyRequest};
 use axum::{
-    extract::{Path, Query, State},
-    http::HeaderMap,
-    http::StatusCode,
+    body::Body,
+    extract::{Multipart, Path, Query, State},
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
-use std::path::Path as FsPath;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
@@ -34,6 +29,10 @@ fn parse_rfc3339(opt: Option<String>) -> Result<Option<DateTime<Utc>>, String> {
             .map_err(|_| format!("Invalid datetime format: {}", value)),
         None => Ok(None),
     }
+}
+
+pub async fn health_check() -> impl IntoResponse {
+    (StatusCode::OK, "OK")
 }
 
 pub async fn create_survey_handler(
@@ -68,184 +67,6 @@ pub async fn create_survey_handler(
                 .into_response()
         }
     }
-}
-
-pub async fn health_check() -> impl IntoResponse {
-    (StatusCode::OK, "OK")
-}
-
-pub async fn create_upload_url_handler(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Json(payload): Json<PresignUploadRequest>,
-) -> Response {
-    if let Err(err) = auth::claims_from_headers(&headers) {
-        return err.into_response();
-    }
-
-    if payload.survey_id.trim().is_empty() || payload.filename.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse {
-                success: false,
-                message: "survey_id and filename are required".to_string(),
-                internal_id: None,
-            }),
-        )
-            .into_response();
-    }
-
-    match database::get_survey(&state.db, &payload.survey_id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return (StatusCode::NOT_FOUND, "Survey not found").into_response();
-        }
-        Err(e) => {
-            tracing::error!("Failed to check survey: {:?}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to check survey",
-            )
-                .into_response();
-        }
-    }
-
-    let ext = FsPath::new(&payload.filename)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| format!(".{}", ext))
-        .unwrap_or_default();
-
-    let file_key = format!(
-        "surveys/{}/{}{}",
-        payload.survey_id,
-        uuid::Uuid::new_v4(),
-        ext
-    );
-
-    let expires_in = payload.expires_in.unwrap_or(900).clamp(60, 3600);
-    let content_type = payload
-        .content_type
-        .clone()
-        .unwrap_or_else(|| "application/octet-stream".to_string());
-
-    let upload_url = match storage::presign_put_url(
-        &state.s3_client,
-        &state.bucket_name,
-        &file_key,
-        Some(&content_type),
-        expires_in,
-    )
-    .await
-    {
-        Ok(url) => url,
-        Err(e) => {
-            tracing::error!("Failed to presign upload url: {:?}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to create upload url",
-            )
-                .into_response();
-        }
-    };
-
-    let upload_url = match storage::rewrite_presigned_url(&upload_url) {
-        Ok(url) => url,
-        Err(err) => {
-            tracing::error!("Failed to rewrite presigned url: {:?}", err);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to create upload url",
-            )
-                .into_response();
-        }
-    };
-
-    let response = PresignUploadResponse {
-        upload_url,
-        file_key,
-        expires_in,
-        required_headers: vec![PresignHeader {
-            name: "Content-Type".to_string(),
-            value: content_type.to_string(),
-        }],
-    };
-
-    (StatusCode::OK, Json(response)).into_response()
-}
-
-pub async fn complete_upload_handler(
-    headers: HeaderMap,
-    State(state): State<AppState>,
-    Json(payload): Json<CompleteUploadRequest>,
-) -> Response {
-    if let Err(err) = auth::claims_from_headers(&headers) {
-        return err.into_response();
-    }
-
-    if payload.survey_id.trim().is_empty() || payload.file_key.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse {
-                success: false,
-                message: "survey_id and file_key are required".to_string(),
-                internal_id: None,
-            }),
-        )
-            .into_response();
-    }
-
-    let expected_prefix = format!("surveys/{}/", payload.survey_id);
-    if !payload.file_key.starts_with(&expected_prefix) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ApiResponse {
-                success: false,
-                message: "file_key does not match survey_id".to_string(),
-                internal_id: None,
-            }),
-        )
-            .into_response();
-    }
-
-    match database::get_survey(&state.db, &payload.survey_id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return (StatusCode::NOT_FOUND, "Survey not found").into_response();
-        }
-        Err(e) => {
-            tracing::error!("Failed to check survey: {:?}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to check survey",
-            )
-                .into_response();
-        }
-    }
-
-    let url = storage::build_object_url(&state.bucket_name, &payload.file_key);
-    if let Err(e) = database::add_photo_url(&state.db, &payload.survey_id, &url).await {
-        tracing::error!("Failed to update DB for photo: {:?}", e);
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiResponse {
-                success: false,
-                message: "Failed to update database".to_string(),
-                internal_id: None,
-            }),
-        )
-            .into_response();
-    }
-
-    (
-        StatusCode::OK,
-        Json(ApiResponse {
-            success: true,
-            message: "Photo upload completed".to_string(),
-            internal_id: Some(payload.survey_id),
-        }),
-    )
-        .into_response()
 }
 
 pub async fn get_survey_handler(
@@ -296,6 +117,169 @@ pub async fn list_surveys_handler(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Failed to fetch records",
+            )
+                .into_response()
+        }
+    }
+}
+
+// ── Photo blob handlers ───────────────────────────────────────────────────────
+
+/// POST /api/surveys/:id/photos
+/// Upload one or more photos for a survey via multipart/form-data.
+/// Each part should have content-disposition with a `name` and optional `filename`.
+pub async fn upload_photo_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Path(survey_id): Path<String>,
+    mut multipart: Multipart,
+) -> Response {
+    if let Err(err) = auth::claims_from_headers(&headers) {
+        return err.into_response();
+    }
+
+    match database::get_survey(&state.db, &survey_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return (StatusCode::NOT_FOUND, "Survey not found").into_response(),
+        Err(e) => {
+            tracing::error!("Failed to check survey: {:?}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Database error").into_response();
+        }
+    }
+
+    let mut uploaded_ids: Vec<String> = Vec::new();
+
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(f)) => f,
+            Ok(None) => break,
+            Err(e) => {
+                tracing::error!("Multipart error: {:?}", e);
+                return (StatusCode::BAD_REQUEST, "Failed to read multipart data").into_response();
+            }
+        };
+
+        let filename = field
+            .file_name()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "photo".to_string());
+        let content_type = field
+            .content_type()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+
+        let data = match field.bytes().await {
+            Ok(bytes) => bytes.to_vec(),
+            Err(e) => {
+                tracing::error!("Failed to read field bytes: {:?}", e);
+                return (StatusCode::BAD_REQUEST, "Failed to read upload data").into_response();
+            }
+        };
+
+        match database::create_photo(&state.db, &survey_id, &filename, &content_type, data).await {
+            Ok(id) => uploaded_ids.push(id),
+            Err(e) => {
+                tracing::error!("Failed to save photo: {:?}", e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Failed to save photo",
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    if uploaded_ids.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiResponse {
+                success: false,
+                message: "No files were uploaded".to_string(),
+                internal_id: None,
+            }),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "success": true,
+            "photo_ids": uploaded_ids,
+        })),
+    )
+        .into_response()
+}
+
+/// GET /api/surveys/:id/photos
+/// Return metadata list for all photos belonging to a survey.
+pub async fn list_photos_handler(
+    State(state): State<AppState>,
+    Path(survey_id): Path<String>,
+) -> Response {
+    match database::list_photos(&state.db, &survey_id).await {
+        Ok(photos) => (StatusCode::OK, Json(photos)).into_response(),
+        Err(e) => {
+            tracing::error!("Failed to list photos: {:?}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch photos").into_response()
+        }
+    }
+}
+
+/// GET /api/photos/:photo_id
+/// Stream the binary data for a single photo.
+pub async fn get_photo_handler(
+    State(state): State<AppState>,
+    Path(photo_id): Path<String>,
+) -> Response {
+    match database::get_photo_data(&state.db, &photo_id).await {
+        Ok(Some((record, data))) => {
+            let disposition = format!("inline; filename=\"{}\"", record.filename);
+            (
+                StatusCode::OK,
+                [
+                    (header::CONTENT_TYPE, record.content_type),
+                    (header::CONTENT_DISPOSITION, disposition),
+                ],
+                Body::from(data),
+            )
+                .into_response()
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, "Photo not found").into_response(),
+        Err(e) => {
+            tracing::error!("Failed to get photo: {:?}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to fetch photo").into_response()
+        }
+    }
+}
+
+/// DELETE /api/photos/:photo_id
+/// Remove a photo (requires auth).
+pub async fn delete_photo_handler(
+    headers: HeaderMap,
+    State(state): State<AppState>,
+    Path(photo_id): Path<String>,
+) -> Response {
+    if let Err(err) = auth::claims_from_headers(&headers) {
+        return err.into_response();
+    }
+
+    match database::delete_photo(&state.db, &photo_id).await {
+        Ok(true) => (
+            StatusCode::OK,
+            Json(ApiResponse {
+                success: true,
+                message: "Photo deleted".to_string(),
+                internal_id: Some(photo_id),
+            }),
+        )
+            .into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, "Photo not found").into_response(),
+        Err(e) => {
+            tracing::error!("Failed to delete photo: {:?}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to delete photo",
             )
                 .into_response()
         }

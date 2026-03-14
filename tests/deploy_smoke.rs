@@ -1,5 +1,13 @@
+//! Deployment smoke test against a running server.
+//!
+//! Run with:
+//!   DEPLOY_BASE_URL=http://localhost:8080 \
+//!   DEPLOY_ACCOUNT=admin DEPLOY_PASSWORD=admin \
+//!   cargo test --test deploy_smoke -- --ignored
+//!
+//! Set `DEPLOY_RUN_FULL=1` to exercise the full photo upload/download/delete flow.
+
 use dotenvy::dotenv;
-use ifem_radar_v2::storage;
 use reqwest::Client;
 use serde_json::json;
 use std::env;
@@ -49,6 +57,10 @@ async fn test_deploy_smoke() {
         return;
     }
 
+    if !run_full {
+        return;
+    }
+
     // 3) Create survey
     let survey_id = uuid::Uuid::new_v4().to_string();
     println!("deploy_smoke: survey_id={}", survey_id);
@@ -65,16 +77,9 @@ async fn test_deploy_smoke() {
             "category": "ConnectingPipe",
             "details": {
                 "diameter": 100,
-                "length": null,
-                "width": null,
-                "protrusion": null,
-                "siltation_depth": null,
-                "crossing_pipe_count": null,
-                "change_of_area": null,
                 "issues": ["Crack"]
             },
-            "remarks": "Deploy smoke test",
-            "awaiting_photo_count": 1
+            "remarks": "Deploy smoke test"
         }))
         .send()
         .await
@@ -82,117 +87,94 @@ async fn test_deploy_smoke() {
 
     assert!(create_resp.status().is_success());
 
-    // 4) Get presigned upload URL
-    let upload_url_resp = client
-        .post(format!("{}/api/surveys/upload-url", base_url))
+    // 4) Upload photo as blob via multipart POST
+    let photo_bytes = b"smoke test photo content";
+    let photo_part = reqwest::multipart::Part::bytes(photo_bytes.to_vec())
+        .file_name("smoke.jpg")
+        .mime_str("image/jpeg")
+        .expect("invalid mime");
+    let form = reqwest::multipart::Form::new().part("file", photo_part);
+
+    let upload_resp = client
+        .post(format!("{}/api/surveys/{}/photos", base_url, survey_id))
         .bearer_auth(&token)
-        .json(&json!({
-            "survey_id": survey_id,
-            "filename": "smoke.txt",
-            "content_type": "text/plain"
-        }))
+        .multipart(form)
         .send()
         .await
-        .expect("upload url request failed");
+        .expect("photo upload request failed");
 
-    let upload_status = upload_url_resp.status();
+    let upload_status = upload_resp.status();
     if !upload_status.is_success() {
-        let body = upload_url_resp
+        let body = upload_resp
             .text()
             .await
             .unwrap_or_else(|_| "<failed to read body>".to_string());
         panic!(
-            "upload url request failed: status={} body={}",
+            "photo upload failed: status={} body={}",
             upload_status, body
         );
     }
-    let upload_url_body: serde_json::Value = upload_url_resp
+
+    let upload_body: serde_json::Value = upload_resp
         .json()
         .await
-        .expect("upload url response json parse failed");
-    let upload_url = upload_url_body["upload_url"]
-        .as_str()
-        .expect("upload_url missing");
-    let file_key = upload_url_body["file_key"]
-        .as_str()
-        .expect("file_key missing")
-        .to_string();
-    println!("deploy_smoke: file_key={}", file_key);
-    let content_type = upload_url_body["required_headers"]
+        .expect("upload response json parse failed");
+    let photo_id = upload_body["photo_ids"]
         .as_array()
-        .and_then(|items| items.iter().find(|item| item["name"] == "Content-Type"))
-        .and_then(|item| item["value"].as_str())
-        .unwrap_or("application/octet-stream");
+        .and_then(|a| a.first())
+        .and_then(|v| v.as_str())
+        .expect("photo_ids[0] missing")
+        .to_string();
+    println!("deploy_smoke: photo_id={}", photo_id);
 
-    // 5) Upload directly to MinIO/S3
-    let put_resp = client
-        .put(upload_url)
-        .header("Content-Type", content_type)
-        .body("smoke test")
+    // 5) List photos for survey
+    let list_resp = client
+        .get(format!("{}/api/surveys/{}/photos", base_url, survey_id))
         .send()
         .await
-        .expect("presigned upload request failed");
+        .expect("list photos request failed");
+    assert!(list_resp.status().is_success());
+    let list_body: serde_json::Value = list_resp
+        .json()
+        .await
+        .expect("list photos json parse failed");
+    let photos = list_body.as_array().expect("expected array");
+    assert!(!photos.is_empty(), "expected at least one photo");
 
-    assert!(put_resp.status().is_success());
+    // 6) Download photo and verify content
+    let get_resp = client
+        .get(format!("{}/api/photos/{}", base_url, photo_id))
+        .send()
+        .await
+        .expect("get photo request failed");
+    assert!(get_resp.status().is_success());
+    let returned_bytes = get_resp
+        .bytes()
+        .await
+        .expect("get photo body failed");
+    assert_eq!(
+        returned_bytes.as_ref(),
+        photo_bytes,
+        "downloaded photo bytes mismatch"
+    );
 
-    // 6) Complete upload
-    let complete_resp = client
-        .post(format!("{}/api/surveys/complete", base_url))
+    // 7) Delete photo
+    let del_resp = client
+        .delete(format!("{}/api/photos/{}", base_url, photo_id))
         .bearer_auth(&token)
-        .json(&json!({
-            "survey_id": survey_id,
-            "file_key": file_key
-        }))
         .send()
         .await
-        .expect("complete upload request failed");
+        .expect("delete photo request failed");
+    assert!(del_resp.status().is_success());
 
-    assert!(complete_resp.status().is_success());
-
-    // 7) Verify upload recorded in survey
+    // 8) Verify survey record is still accessible
     let survey_resp = client
         .get(format!("{}/api/surveys/{}", base_url, survey_id))
         .send()
         .await
         .expect("get survey request failed");
-
-    let survey_status = survey_resp.status();
-    if !survey_status.is_success() {
-        let body = survey_resp
-            .text()
-            .await
-            .unwrap_or_else(|_| "<failed to read body>".to_string());
-        panic!(
-            "get survey failed: status={} body={}",
-            survey_status, body
-        );
-    }
-
-    let survey_body: serde_json::Value = survey_resp
-        .json()
-        .await
-        .expect("survey response json parse failed");
-    let photo_urls = survey_body["photo_urls"]
-        .as_array()
-        .expect("photo_urls missing or not array");
-    let found = photo_urls.iter().any(|item| {
-        item.as_str()
-            .map(|url| url.contains(&file_key))
-            .unwrap_or(false)
-    });
-    assert!(found, "uploaded file_key not found in photo_urls");
-
-    // 8) Verify object exists in MinIO/S3
-    let bucket = env::var("AWS_BUCKET_NAME").expect("AWS_BUCKET_NAME is required for minio check");
-    println!("deploy_smoke: bucket={}", bucket);
-    let s3_client = storage::init_s3_client().await;
-    if let Err(err) = s3_client
-        .head_object()
-        .bucket(&bucket)
-        .key(&file_key)
-        .send()
-        .await
-    {
-        panic!("minio head_object failed: {:?}", err);
-    }
+    assert!(
+        survey_resp.status().is_success(),
+        "get survey failed after photo deletion"
+    );
 }

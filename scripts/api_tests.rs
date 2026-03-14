@@ -1,3 +1,13 @@
+//! Integration smoke tests.
+//!
+//! Run with: `cargo test --features integration --test api_tests`
+//!
+//! Requires a running PostgreSQL instance. Set `DATABASE_URL` (and optionally
+//! `AUTH_ACCOUNT` / `AUTH_PASSWORD`) before running.
+
+// Imports are conditionally used depending on the `integration` feature.
+#![cfg_attr(not(feature = "integration"), allow(unused))]
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -5,36 +15,26 @@ use axum::{
 use argon2::password_hash::{rand_core::OsRng, SaltString};
 use argon2::{Argon2, PasswordHasher};
 use dotenvy::dotenv;
-use http_body_util::BodyExt; // for collect
+use http_body_util::BodyExt;
 use ifem_radar_v2::models::{CreateSurveyRequest, SurveyCategory, SurveyDetails};
-use ifem_radar_v2::{create_router, database, storage};
-use reqwest::Client;
+use ifem_radar_v2::{create_router, database};
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use std::env;
-use tower::ServiceExt; // for oneshot
+use tower::ServiceExt;
 
-// Helper to setup state for tests
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
 async fn setup() -> database::AppState {
     dotenv().ok();
-
-    // In a real test, you might want to use a separate test DB or transaction.
-    // For now we use the local DB but verify connection.
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = PgPoolOptions::new()
         .connect(&database_url)
         .await
         .expect("Failed to connect to DB");
-
-    let s3_client = storage::init_s3_client().await;
-    let bucket_name = env::var("AWS_BUCKET_NAME").unwrap_or_else(|_| "ifem-radar-test".to_string());
-
-    database::AppState {
-        db: pool,
-        s3_client,
-        bucket_name,
-    }
+    database::AppState { db: pool }
 }
 
+#[cfg(feature = "integration")]
 async fn ensure_test_account(pool: &Pool<Postgres>, account: &str, password: &str) {
     let salt = SaltString::generate(&mut OsRng);
     let password_hash = Argon2::default()
@@ -59,9 +59,9 @@ async fn ensure_test_account(pool: &Pool<Postgres>, account: &str, password: &st
     .expect("Failed to upsert test account");
 }
 
-async fn login_token(state: database::AppState) -> String {
-    let app = create_router(state);
-
+#[cfg(feature = "integration")]
+async fn login_token(state: &database::AppState) -> String {
+    let app = create_router(state.clone());
     let account = env::var("AUTH_ACCOUNT").unwrap_or_else(|_| "admin".to_string());
     let password = env::var("AUTH_PASSWORD").unwrap_or_else(|_| "admin".to_string());
 
@@ -86,7 +86,6 @@ async fn login_token(state: database::AppState) -> String {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     body_json["access_token"]
@@ -94,6 +93,32 @@ async fn login_token(state: database::AppState) -> String {
         .expect("access_token must be string")
         .to_string()
 }
+
+#[cfg(feature = "integration")]
+fn make_survey_request(survey_id: &str) -> CreateSurveyRequest {
+    CreateSurveyRequest {
+        id: survey_id.to_string(),
+        start_point: "A".to_string(),
+        end_point: "B".to_string(),
+        orientation: "Left".to_string(),
+        distance: 10.5,
+        top_distance: ">0".to_string(),
+        category: SurveyCategory::ConnectingPipe,
+        details: SurveyDetails {
+            diameter: Some(100),
+            length: None,
+            width: None,
+            protrusion: None,
+            siltation_depth: None,
+            crossing_pipe_count: None,
+            change_of_area: None,
+            issues: Some(vec!["Crack".to_string()]),
+        },
+        remarks: Some("Test remark".to_string()),
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(feature = "integration")]
 #[tokio::test]
@@ -118,32 +143,11 @@ async fn test_health_check() {
 #[tokio::test]
 async fn test_create_survey() {
     let state = setup().await;
-    let token = login_token(state.clone()).await;
+    let token = login_token(&state).await;
     let app = create_router(state);
 
     let survey_id = uuid::Uuid::new_v4().to_string();
-
-    let payload = CreateSurveyRequest {
-        id: survey_id.clone(),
-        start_point: "A".to_string(),
-        end_point: "B".to_string(),
-        orientation: "Left".to_string(),
-        distance: 10.5,
-        top_distance: ">0".to_string(),
-        category: SurveyCategory::ConnectingPipe,
-        details: SurveyDetails {
-            diameter: Some(100),
-            length: None,
-            width: None,
-            protrusion: None,
-            siltation_depth: None,
-            crossing_pipe_count: None,
-            change_of_area: None,
-            issues: Some(vec!["Crack".to_string()]),
-        },
-        remarks: Some("Test remark".to_string()),
-        awaiting_photo_count: 2,
-    };
+    let payload = make_survey_request(&survey_id);
 
     let response = app
         .oneshot(
@@ -159,134 +163,173 @@ async fn test_create_survey() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::CREATED);
-
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-
     assert_eq!(body_json["success"], true);
     assert_eq!(body_json["internal_id"], survey_id);
 }
 
+/// Test the full photo blob lifecycle: upload → list → download → delete.
 #[cfg(feature = "integration")]
 #[tokio::test]
-async fn test_upload_photo() {
+async fn test_photo_blob_lifecycle() {
     let state = setup().await;
-    let token = login_token(state.clone()).await;
-    let app = create_router(state.clone());
+    let token = login_token(&state).await;
 
-    // 1. Create a survey record first
+    // 1. Create a survey to attach photos to.
     let survey_id = uuid::Uuid::new_v4().to_string();
-    let payload = CreateSurveyRequest {
-        id: survey_id.clone(),
-        start_point: "Start".to_string(),
-        end_point: "End".to_string(),
-        orientation: "Up".to_string(),
-        distance: 5.0,
-        top_distance: "0.5".to_string(),
-        category: SurveyCategory::Siltation,
-        details: SurveyDetails {
-            diameter: None,
-            length: None,
-            width: None,
-            protrusion: None,
-            siltation_depth: Some(10),
-            crossing_pipe_count: None,
-            change_of_area: None,
-            issues: None,
-        },
-        remarks: None,
-        awaiting_photo_count: 1,
-    };
-
-    database::create_survey_record(&state.db, payload)
+    database::create_survey_record(&state.db, make_survey_request(&survey_id))
         .await
         .expect("Failed to create survey record");
 
-    // 2. Request presigned upload URL
-    let upload_url_response = app
+    // 2. Upload a photo via multipart POST.
+    let boundary = "----TestBoundary12345";
+    let photo_bytes: &[u8] = b"\xFF\xD8\xFF\xE0fake_jpeg_data";
+    let mut body_bytes: Vec<u8> = format!(
+        "--{boundary}\r\n\
+         Content-Disposition: form-data; name=\"file\"; filename=\"photo.jpg\"\r\n\
+         Content-Type: image/jpeg\r\n\
+         \r\n",
+        boundary = boundary,
+    )
+    .into_bytes();
+    body_bytes.extend_from_slice(photo_bytes);
+    body_bytes.extend_from_slice(
+        format!("\r\n--{boundary}--\r\n", boundary = boundary).as_bytes(),
+    );
+
+    let upload_response = create_router(state.clone())
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/surveys/upload-url")
+                .uri(format!("/api/surveys/{}/photos", survey_id))
                 .header("authorization", format!("Bearer {}", token))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "survey_id": survey_id,
-                        "filename": "test_photo.txt",
-                        "content_type": "text/plain"
-                    })
-                    .to_string(),
-                ))
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={}", boundary),
+                )
+                .body(Body::from(body_bytes))
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    assert_eq!(upload_url_response.status(), StatusCode::OK);
-
-    let body = upload_url_response
+    assert_eq!(upload_response.status(), StatusCode::CREATED);
+    let upload_body = upload_response
         .into_body()
         .collect()
         .await
         .unwrap()
         .to_bytes();
-    let body_json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let upload_url = body_json["upload_url"].as_str().unwrap().to_string();
-    let file_key = body_json["file_key"].as_str().unwrap().to_string();
-    let content_type = body_json["required_headers"]
-        .as_array()
-        .and_then(|items| items.iter().find(|item| item["name"] == "Content-Type"))
-        .and_then(|item| item["value"].as_str())
-        .unwrap_or("application/octet-stream")
-        .to_string();
+    let upload_json: serde_json::Value = serde_json::from_slice(&upload_body).unwrap();
+    let photo_ids = upload_json["photo_ids"].as_array().expect("photo_ids array");
+    assert_eq!(photo_ids.len(), 1);
+    let photo_id = photo_ids[0].as_str().unwrap().to_string();
 
-    // 3. Upload directly to MinIO/S3
-    let http_client = Client::new();
-    let put_response = http_client
-        .put(&upload_url)
-        .header("Content-Type", content_type)
-        .body("fake image content")
-        .send()
-        .await
-        .unwrap();
-    assert!(put_response.status().is_success());
-
-    // 4. Complete upload
-    let complete_response = app
+    // 3. List photos for the survey.
+    let list_response = create_router(state.clone())
         .oneshot(
             Request::builder()
-                .method("POST")
-                .uri("/api/surveys/complete")
-                .header("authorization", format!("Bearer {}", token))
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "survey_id": survey_id,
-                        "file_key": file_key
-                    })
-                    .to_string(),
-                ))
+                .uri(format!("/api/surveys/{}/photos", survey_id))
+                .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
 
-    // 5. Verify Response
-    assert_eq!(complete_response.status(), StatusCode::OK);
+    assert_eq!(list_response.status(), StatusCode::OK);
+    let list_body = list_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    let list_json: serde_json::Value = serde_json::from_slice(&list_body).unwrap();
+    let photos = list_json.as_array().expect("photo array");
+    assert_eq!(photos.len(), 1);
+    assert_eq!(photos[0]["id"], photo_id);
+    assert_eq!(photos[0]["filename"], "photo.jpg");
 
-    // let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
-    // let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    // 4. Download the photo and verify the binary content.
+    let get_response = create_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/photos/{}", photo_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
 
-    // assert_eq!(body_json["success"], true);
+    assert_eq!(get_response.status(), StatusCode::OK);
+    let returned_data = get_response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    assert_eq!(returned_data.as_ref(), photo_bytes);
 
-    // // 5. Verify DB Update
-    // let record = database::get_survey(&state.db, &survey_id)
-    //     .await
-    //     .unwrap()
-    //     .unwrap();
-    // assert!(!record.photo_urls.is_empty());
-    // assert!(record.photo_urls[0].contains("test_photo.txt"));
-    // // Awaiting count should prevent dropping below 0, but we started with 1, so it should be 0 now
-    // assert_eq!(record.awaiting_photo_count, 0);
+    // 5. Delete the photo.
+    let delete_response = create_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/photos/{}", photo_id))
+                .header("authorization", format!("Bearer {}", token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(delete_response.status(), StatusCode::OK);
+
+    // 6. Confirm the photo is gone.
+    let gone_response = create_router(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/photos/{}", photo_id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(gone_response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Uploading to a non-existent survey should return 404.
+#[cfg(feature = "integration")]
+#[tokio::test]
+async fn test_upload_photo_survey_not_found() {
+    let state = setup().await;
+    let token = login_token(&state).await;
+
+    let boundary = "----TestBoundary99";
+    let body = format!(
+        "--{boundary}\r\n\
+         Content-Disposition: form-data; name=\"file\"; filename=\"x.jpg\"\r\n\
+         Content-Type: image/jpeg\r\n\
+         \r\nnoop\r\n--{boundary}--\r\n",
+        boundary = boundary,
+    );
+
+    let response = create_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/surveys/nonexistent-id/photos")
+                .header("authorization", format!("Bearer {}", token))
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={}", boundary),
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
