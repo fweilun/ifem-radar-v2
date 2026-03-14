@@ -4,8 +4,7 @@ pub mod handlers;
 pub mod models;
 
 use axum::{
-    http::Method,
-    header::{AUTHORIZATION, CONTENT_TYPE},
+    http::{header::{AUTHORIZATION, CONTENT_TYPE}, Method},
     routing::{get, post},
     Router,
 };
@@ -17,7 +16,7 @@ use tower_http::cors::{Any, CorsLayer};
 pub fn create_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
     .allow_origin(Any)
-    .allow_methods([Method::GET, Method::POST])
+    .allow_methods([Method::GET, Method::POST, Method::DELETE, Method::OPTIONS])
     .allow_headers([CONTENT_TYPE, AUTHORIZATION]);
 
     Router::new()
