@@ -1,7 +1,6 @@
 /target
 .env
 .env.prod
-.env.prod.example
 
 .vscode
 target
