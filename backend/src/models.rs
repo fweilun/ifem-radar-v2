@@ -19,6 +19,7 @@ pub struct SurveyRecord {
 }
 
 #[derive(Debug, Serialize, Deserialize, sqlx::Type, Clone)]
+#[serde(rename_all = "snake_case")]
 #[sqlx(type_name = "varchar")]
 #[sqlx(rename_all = "snake_case")]
 pub enum SurveyCategory {

@@ -1,7 +1,7 @@
 services:
   backend:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
     container_name: ifem-radar-backend
     restart: unless-stopped
@@ -25,26 +25,6 @@ services:
     networks:
       - ifem_net
 
-  web:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: ifem-radar-web
-    restart: unless-stopped
-    ports:
-      - "5173:80"
-    depends_on:
-      backend:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost/"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-      start_period: 10s
-    networks:
-      - ifem_net
-
   db:
     image: postgres:16
     container_name: ifem-radar-db
@@ -57,7 +37,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/survey.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./survey.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ifemfweilun -d ifem_radar"]
       interval: 5s

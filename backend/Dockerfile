@@ -9,9 +9,12 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
 
-# NOTE:
-# This project currently uses runtime sqlx::query (no compile-time checked macros),
-# so we don't require a .sqlx directory for Docker builds.
+# Copy sqlx-data.json. 
+# We use a wildcard or exact match. If it doesn't exist, this fails.
+COPY .sqlx ./.sqlx
+
+# Build with SQLX_OFFLINE=true
+ENV SQLX_OFFLINE=true
 RUN cargo build --release --bin ifem-radar-v2
 
 # Runtime stage

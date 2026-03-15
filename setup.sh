@@ -1,14 +1,14 @@
 #!/bin/bash
 set -e
 
-echo "Generating SQLx offline data..."
-# Ensure local DB is running for this step (we assume user has it from previous steps)
-# If not, this step might fail, but let's try.
-cargo sqlx prepare -- --lib
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "Building and starting Docker containers..."
-docker-compose up --build -d
+echo "Starting all services (db + backend + web) with Docker Compose..."
+cd "$ROOT_DIR"
+docker compose up --build -d
 
-echo "Setup complete! Services are running."
-echo "App: http://localhost:8080"
+echo "Setup complete!"
+echo "Backend health: http://localhost:8080/health"
+echo "Web: http://127.0.0.1:5173"
+echo "Tip: if you previously started Vite manually, stop it to avoid port confusion."
 

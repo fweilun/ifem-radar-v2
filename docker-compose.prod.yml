@@ -3,16 +3,13 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: ifem-radar-backend
     restart: unless-stopped
-    ports:
-      - "8080:8080"
     env_file:
-      - .env
+      - .env.prod
     environment:
-      DATABASE_URL: postgres://ifemfweilun:P%40ssw0rdIfem@db:5432/ifem_radar
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD_ENCODED}@db:5432/${POSTGRES_DB}
       PORT: "8080"
-      RUST_LOG: info
+      RUST_LOG: ${RUST_LOG:-info}
     depends_on:
       db:
         condition: service_healthy
@@ -29,10 +26,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: ifem-radar-web
     restart: unless-stopped
     ports:
-      - "5173:80"
+      - "80:80"
     depends_on:
       backend:
         condition: service_healthy
@@ -47,19 +43,18 @@ services:
 
   db:
     image: postgres:16
-    container_name: ifem-radar-db
     restart: unless-stopped
+    env_file:
+      - .env.prod
     environment:
-      POSTGRES_USER: ifemfweilun
-      POSTGRES_PASSWORD: P@ssw0rdIfem
-      POSTGRES_DB: ifem_radar
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/survey.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./backend/survey.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ifemfweilun -d ifem_radar"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 20
