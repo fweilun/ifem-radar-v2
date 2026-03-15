@@ -7,6 +7,7 @@ COPY Cargo.toml Cargo.lock ./
 
 # Copy source code
 COPY src ./src
+COPY scripts ./scripts
 COPY migrations ./migrations
 
 # NOTE:
