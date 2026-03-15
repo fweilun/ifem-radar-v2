@@ -15,7 +15,7 @@ COPY .sqlx ./.sqlx
 
 # Build with SQLX_OFFLINE=true
 ENV SQLX_OFFLINE=true
-RUN cargo build --release --bin ifem-radar-v2
+RUN cargo build --release --bin ifem-radar-v2 --bin create_account
 
 # Runtime stage
 FROM docker.io/library/ubuntu:24.04
@@ -29,6 +29,7 @@ RUN apt-get update && \
 
 # Copy binary
 COPY --from=builder /app/target/release/ifem-radar-v2 .
+COPY --from=builder /app/target/release/create_account .
 
 # Expose port
 EXPOSE 8080

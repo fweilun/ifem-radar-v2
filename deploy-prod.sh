@@ -17,3 +17,4 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 echo "Done."
 echo "Web: http://<your-server-ip>/"
 echo "Health: http://<your-server-ip>/health"
+echo "Create account: docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm create_account <account> <password> [full_name] [role]"
