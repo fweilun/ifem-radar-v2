@@ -12,7 +12,7 @@ if [ ! -f .env.prod ]; then
 fi
 
 echo "Starting production stack..."
-docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build db backend web
 
 echo "Done."
 echo "Web: http://<your-server-ip>/"
